@@ -5,6 +5,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 
 const app = express();
 const server = http.createServer(app);
@@ -30,11 +31,109 @@ const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
 app.use(express.static('public'));
 app.use(express.json());
 
+// ── USER STORE (in memory) ────────────────────────────────────
+const accounts = new Map();  // email -> { email, passwordHash, username, color, avatar, id, createdAt }
+const sessions = new Map();  // token -> email
+
+function hashPassword(password) {
+  return crypto.createHash('sha256').update(password + 'ghost_salt_2024').digest('hex');
+}
+
+function createSession(email) {
+  const token = uuidv4();
+  sessions.set(token, email);
+  return token;
+}
+
+function getAccountByToken(token) {
+  const email = sessions.get(token);
+  if (!email) return null;
+  return accounts.get(email) || null;
+}
+
+// ── AUTH ENDPOINTS ────────────────────────────────────────────
+app.post('/register', (req, res) => {
+  const { email, password, username, color, avatar } = req.body;
+
+  if (!email || !password || !username) {
+    return res.status(400).json({ error: 'Email, password and username are required' });
+  }
+
+  if (password.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  }
+
+  // Check if email already taken
+  if (accounts.has(email.toLowerCase())) {
+    return res.status(400).json({ error: 'Email already registered' });
+  }
+
+  // Check if username already taken
+  for (const acc of accounts.values()) {
+    if (acc.username.toLowerCase() === username.toLowerCase()) {
+      return res.status(400).json({ error: 'Username already taken' });
+    }
+  }
+
+  const account = {
+    id: uuidv4(),
+    email: email.toLowerCase(),
+    passwordHash: hashPassword(password),
+    username,
+    color: color || '#00ffcc',
+    avatar: avatar || '👻',
+    createdAt: Date.now()
+  };
+
+  accounts.set(email.toLowerCase(), account);
+  const token = createSession(email.toLowerCase());
+
+  res.json({
+    token,
+    user: { username: account.username, color: account.color, avatar: account.avatar, id: account.id }
+  });
+});
+
+app.post('/login', (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password required' });
+  }
+
+  const account = accounts.get(email.toLowerCase());
+  if (!account) {
+    return res.status(401).json({ error: 'No account found with that email' });
+  }
+
+  if (account.passwordHash !== hashPassword(password)) {
+    return res.status(401).json({ error: 'Wrong password' });
+  }
+
+  const token = createSession(email.toLowerCase());
+
+  res.json({
+    token,
+    user: { username: account.username, color: account.color, avatar: account.avatar, id: account.id }
+  });
+});
+
+app.post('/verify', (req, res) => {
+  const { token } = req.body;
+  const account = getAccountByToken(token);
+  if (!account) return res.status(401).json({ error: 'Invalid session' });
+  res.json({
+    user: { username: account.username, color: account.color, avatar: account.avatar, id: account.id }
+  });
+});
+
+// ── FILE UPLOAD ───────────────────────────────────────────────
 app.post('/upload', upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
   res.json({ url: '/uploads/' + req.file.filename, type: req.file.mimetype });
 });
 
+// ── SOCKET ────────────────────────────────────────────────────
 const users = new Map();
 const messages = [];
 const stories = [];
