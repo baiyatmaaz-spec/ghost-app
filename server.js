@@ -31,9 +31,72 @@ const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
 app.use(express.static('public'));
 app.use(express.json());
 
-// ── USER STORE (in memory) ────────────────────────────────────
-const accounts = new Map();  // email -> { email, passwordHash, username, color, avatar, id, createdAt }
-const sessions = new Map();  // token -> email
+// ── PERSISTENT ACCOUNT STORAGE ────────────────────────────────
+const ACCOUNTS_FILE = './accounts.json';
+const SESSIONS_FILE = './sessions.json';
+
+function loadAccounts() {
+  try {
+    if (fs.existsSync(ACCOUNTS_FILE)) {
+      const data = fs.readFileSync(ACCOUNTS_FILE, 'utf8');
+      const obj = JSON.parse(data);
+      const map = new Map();
+      for (const [key, value] of Object.entries(obj)) {
+        map.set(key, value);
+      }
+      console.log('Loaded', map.size, 'accounts from disk');
+      return map;
+    }
+  } catch (e) {
+    console.error('Error loading accounts:', e);
+  }
+  return new Map();
+}
+
+function saveAccounts() {
+  try {
+    const obj = {};
+    for (const [key, value] of accounts.entries()) {
+      obj[key] = value;
+    }
+    fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(obj, null, 2));
+  } catch (e) {
+    console.error('Error saving accounts:', e);
+  }
+}
+
+function loadSessions() {
+  try {
+    if (fs.existsSync(SESSIONS_FILE)) {
+      const data = fs.readFileSync(SESSIONS_FILE, 'utf8');
+      const obj = JSON.parse(data);
+      const map = new Map();
+      for (const [key, value] of Object.entries(obj)) {
+        map.set(key, value);
+      }
+      return map;
+    }
+  } catch (e) {
+    console.error('Error loading sessions:', e);
+  }
+  return new Map();
+}
+
+function saveSessions() {
+  try {
+    const obj = {};
+    for (const [key, value] of sessions.entries()) {
+      obj[key] = value;
+    }
+    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(obj, null, 2));
+  } catch (e) {
+    console.error('Error saving sessions:', e);
+  }
+}
+
+// Load accounts and sessions from disk on startup
+const accounts = loadAccounts();
+const sessions = loadSessions();
 
 function hashPassword(password) {
   return crypto.createHash('sha256').update(password + 'ghost_salt_2024').digest('hex');
@@ -42,6 +105,7 @@ function hashPassword(password) {
 function createSession(email) {
   const token = uuidv4();
   sessions.set(token, email);
+  saveSessions();
   return token;
 }
 
@@ -63,12 +127,10 @@ app.post('/register', (req, res) => {
     return res.status(400).json({ error: 'Password must be at least 6 characters' });
   }
 
-  // Check if email already taken
   if (accounts.has(email.toLowerCase())) {
-    return res.status(400).json({ error: 'Email already registered' });
+    return res.status(400).json({ error: 'Email already registered — please sign in instead' });
   }
 
-  // Check if username already taken
   for (const acc of accounts.values()) {
     if (acc.username.toLowerCase() === username.toLowerCase()) {
       return res.status(400).json({ error: 'Username already taken' });
@@ -86,7 +148,11 @@ app.post('/register', (req, res) => {
   };
 
   accounts.set(email.toLowerCase(), account);
+  saveAccounts(); // Save to disk immediately
+
   const token = createSession(email.toLowerCase());
+
+  console.log('New account created:', username, email.toLowerCase());
 
   res.json({
     token,
@@ -102,8 +168,9 @@ app.post('/login', (req, res) => {
   }
 
   const account = accounts.get(email.toLowerCase());
+
   if (!account) {
-    return res.status(401).json({ error: 'No account found with that email' });
+    return res.status(401).json({ error: 'No account found with that email. Please create an account first.' });
   }
 
   if (account.passwordHash !== hashPassword(password)) {
@@ -111,6 +178,8 @@ app.post('/login', (req, res) => {
   }
 
   const token = createSession(email.toLowerCase());
+
+  console.log('Login:', account.username);
 
   res.json({
     token,
