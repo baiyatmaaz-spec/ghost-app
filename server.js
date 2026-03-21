@@ -27,85 +27,46 @@ const storage = multer.diskStorage({
 });
 
 const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
-
 app.use(express.static('public'));
 app.use(express.json());
 
-// ── PERSISTENT ACCOUNT STORAGE ────────────────────────────────
+// ── PERSISTENT STORAGE ────────────────────────────────────────
 const ACCOUNTS_FILE = './accounts.json';
 const SESSIONS_FILE = './sessions.json';
 
-function loadAccounts() {
+function loadJSON(file) {
   try {
-    if (fs.existsSync(ACCOUNTS_FILE)) {
-      const data = fs.readFileSync(ACCOUNTS_FILE, 'utf8');
-      const obj = JSON.parse(data);
+    if (fs.existsSync(file)) {
+      const obj = JSON.parse(fs.readFileSync(file, 'utf8'));
       const map = new Map();
-      for (const [key, value] of Object.entries(obj)) {
-        map.set(key, value);
-      }
-      console.log('Loaded', map.size, 'accounts from disk');
+      for (const [k, v] of Object.entries(obj)) map.set(k, v);
       return map;
     }
-  } catch (e) {
-    console.error('Error loading accounts:', e);
-  }
+  } catch (e) { console.error('Load error:', e); }
   return new Map();
 }
 
-function saveAccounts() {
+function saveJSON(file, map) {
   try {
     const obj = {};
-    for (const [key, value] of accounts.entries()) {
-      obj[key] = value;
-    }
-    fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(obj, null, 2));
-  } catch (e) {
-    console.error('Error saving accounts:', e);
-  }
+    for (const [k, v] of map.entries()) obj[k] = v;
+    fs.writeFileSync(file, JSON.stringify(obj, null, 2));
+  } catch (e) { console.error('Save error:', e); }
 }
 
-function loadSessions() {
-  try {
-    if (fs.existsSync(SESSIONS_FILE)) {
-      const data = fs.readFileSync(SESSIONS_FILE, 'utf8');
-      const obj = JSON.parse(data);
-      const map = new Map();
-      for (const [key, value] of Object.entries(obj)) {
-        map.set(key, value);
-      }
-      return map;
-    }
-  } catch (e) {
-    console.error('Error loading sessions:', e);
-  }
-  return new Map();
-}
+const accounts = loadJSON(ACCOUNTS_FILE);
+const sessions = loadJSON(SESSIONS_FILE);
 
-function saveSessions() {
-  try {
-    const obj = {};
-    for (const [key, value] of sessions.entries()) {
-      obj[key] = value;
-    }
-    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(obj, null, 2));
-  } catch (e) {
-    console.error('Error saving sessions:', e);
-  }
-}
+console.log('Loaded', accounts.size, 'accounts');
 
-// Load accounts and sessions from disk on startup
-const accounts = loadAccounts();
-const sessions = loadSessions();
-
-function hashPassword(password) {
+function hashPwd(password) {
   return crypto.createHash('sha256').update(password + 'ghost_salt_2024').digest('hex');
 }
 
 function createSession(email) {
   const token = uuidv4();
   sessions.set(token, email);
-  saveSessions();
+  saveJSON(SESSIONS_FILE, sessions);
   return token;
 }
 
@@ -115,88 +76,53 @@ function getAccountByToken(token) {
   return accounts.get(email) || null;
 }
 
-// ── AUTH ENDPOINTS ────────────────────────────────────────────
+// ── AUTH ──────────────────────────────────────────────────────
 app.post('/register', (req, res) => {
   const { email, password, username, color, avatar } = req.body;
-
-  if (!email || !password || !username) {
-    return res.status(400).json({ error: 'Email, password and username are required' });
-  }
-
-  if (password.length < 6) {
+  if (!email || !password || !username)
+    return res.status(400).json({ error: 'All fields required' });
+  if (password.length < 6)
     return res.status(400).json({ error: 'Password must be at least 6 characters' });
-  }
-
-  if (accounts.has(email.toLowerCase())) {
-    return res.status(400).json({ error: 'Email already registered — please sign in instead' });
-  }
-
+  if (accounts.has(email.toLowerCase()))
+    return res.status(400).json({ error: 'Email already registered — sign in instead' });
   for (const acc of accounts.values()) {
-    if (acc.username.toLowerCase() === username.toLowerCase()) {
+    if (acc.username.toLowerCase() === username.toLowerCase())
       return res.status(400).json({ error: 'Username already taken' });
-    }
   }
-
   const account = {
     id: uuidv4(),
     email: email.toLowerCase(),
-    passwordHash: hashPassword(password),
-    username,
-    color: color || '#00ffcc',
-    avatar: avatar || '👻',
+    passwordHash: hashPwd(password),
+    username, color: color || '#00ffcc', avatar: avatar || '👻',
     createdAt: Date.now()
   };
-
   accounts.set(email.toLowerCase(), account);
-  saveAccounts(); // Save to disk immediately
-
+  saveJSON(ACCOUNTS_FILE, accounts);
   const token = createSession(email.toLowerCase());
-
-  console.log('New account created:', username, email.toLowerCase());
-
-  res.json({
-    token,
-    user: { username: account.username, color: account.color, avatar: account.avatar, id: account.id }
-  });
+  console.log('New account:', username);
+  res.json({ token, user: { username: account.username, color: account.color, avatar: account.avatar, id: account.id } });
 });
 
 app.post('/login', (req, res) => {
   const { email, password } = req.body;
-
-  if (!email || !password) {
+  if (!email || !password)
     return res.status(400).json({ error: 'Email and password required' });
-  }
-
   const account = accounts.get(email.toLowerCase());
-
-  if (!account) {
-    return res.status(401).json({ error: 'No account found with that email. Please create an account first.' });
-  }
-
-  if (account.passwordHash !== hashPassword(password)) {
+  if (!account)
+    return res.status(401).json({ error: 'No account found with that email. Create an account first.' });
+  if (account.passwordHash !== hashPwd(password))
     return res.status(401).json({ error: 'Wrong password' });
-  }
-
   const token = createSession(email.toLowerCase());
-
   console.log('Login:', account.username);
-
-  res.json({
-    token,
-    user: { username: account.username, color: account.color, avatar: account.avatar, id: account.id }
-  });
+  res.json({ token, user: { username: account.username, color: account.color, avatar: account.avatar, id: account.id } });
 });
 
 app.post('/verify', (req, res) => {
-  const { token } = req.body;
-  const account = getAccountByToken(token);
+  const account = getAccountByToken(req.body.token);
   if (!account) return res.status(401).json({ error: 'Invalid session' });
-  res.json({
-    user: { username: account.username, color: account.color, avatar: account.avatar, id: account.id }
-  });
+  res.json({ user: { username: account.username, color: account.color, avatar: account.avatar, id: account.id } });
 });
 
-// ── FILE UPLOAD ───────────────────────────────────────────────
 app.post('/upload', upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
   res.json({ url: '/uploads/' + req.file.filename, type: req.file.mimetype });
@@ -206,6 +132,7 @@ app.post('/upload', upload.single('file'), (req, res) => {
 const users = new Map();
 const messages = [];
 const stories = [];
+const userLocations = new Map(); // socketId -> {lat, lng, username, avatar, color, timestamp}
 
 function getOnlineUsers() {
   return Array.from(users.values()).map(u => ({
@@ -213,9 +140,8 @@ function getOnlineUsers() {
   }));
 }
 
-function broadcastUsers() {
-  io.emit('users_update', getOnlineUsers());
-}
+function broadcastUsers() { io.emit('users_update', getOnlineUsers()); }
+function broadcastLocations() { io.emit('locations_update', Array.from(userLocations.values())); }
 
 io.on('connection', (socket) => {
 
@@ -225,14 +151,36 @@ io.on('connection', (socket) => {
     socket.emit('init', {
       user,
       messages: messages.slice(-50),
-      stories: stories.filter(s => Date.now() - s.createdAt < 24 * 60 * 60 * 1000),
-      onlineUsers: getOnlineUsers()
+      stories: stories.filter(s => Date.now() - s.createdAt < 86400000),
+      onlineUsers: getOnlineUsers(),
+      locations: Array.from(userLocations.values())
     });
     io.emit('user_joined', user);
     broadcastUsers();
     io.emit('system_message', { id: uuidv4(), text: username + ' entered the ghost network', timestamp: Date.now() });
   });
 
+  // ── LOCATION ─────────────────────────────────────────────────
+  socket.on('share_location', ({ lat, lng }) => {
+    const user = users.get(socket.id);
+    if (!user) return;
+    userLocations.set(socket.id, {
+      id: socket.id,
+      lat, lng,
+      username: user.username,
+      avatar: user.avatar,
+      color: user.color,
+      timestamp: Date.now()
+    });
+    broadcastLocations();
+  });
+
+  socket.on('stop_sharing_location', () => {
+    userLocations.delete(socket.id);
+    broadcastLocations();
+  });
+
+  // ── MESSAGES ─────────────────────────────────────────────────
   socket.on('send_message', (data) => {
     const user = users.get(socket.id);
     if (!user) return;
@@ -260,7 +208,7 @@ io.on('connection', (socket) => {
     socket.emit('private_message_sent', { ...msg, to: toId });
     socket.to(toId).emit('notification', {
       title: user.username,
-      body: text || (type === 'voice' ? 'Sent a voice message' : type === 'image' ? 'Sent a photo' : 'New message'),
+      body: text || (type === 'voice' ? 'Voice message' : type === 'image' ? 'Photo' : type === 'video' ? 'Video' : 'New message'),
       from: socket.id, username: user.username
     });
   });
@@ -291,19 +239,14 @@ io.on('connection', (socket) => {
 
   socket.on('view_story', ({ storyId }) => {
     const story = stories.find(s => s.id === storyId);
-    if (story && !story.views.includes(socket.id)) {
-      story.views.push(socket.id);
-      io.to(story.userId).emit('story_viewed', { storyId, viewerId: socket.id });
-    }
+    if (story && !story.views.includes(socket.id)) story.views.push(socket.id);
   });
 
+  // ── CALLS ────────────────────────────────────────────────────
   socket.on('call_user', ({ toId, signal, callType }) => {
     const user = users.get(socket.id);
     if (!user) return;
-    socket.to(toId).emit('incoming_call', {
-      from: socket.id, username: user.username, color: user.color,
-      avatar: user.avatar, signal, callType
-    });
+    socket.to(toId).emit('incoming_call', { from: socket.id, username: user.username, color: user.color, avatar: user.avatar, signal, callType });
   });
 
   socket.on('answer_call', ({ toId, signal }) => {
@@ -312,7 +255,7 @@ io.on('connection', (socket) => {
 
   socket.on('reject_call', ({ toId }) => {
     const user = users.get(socket.id);
-    socket.to(toId).emit('call_rejected', { from: socket.id, username: user ? user.username : 'Unknown' });
+    socket.to(toId).emit('call_rejected', { from: socket.id, username: user ? user.username : '' });
   });
 
   socket.on('end_call', ({ toId }) => {
@@ -329,7 +272,9 @@ io.on('connection', (socket) => {
       io.emit('user_left', { id: socket.id, username: user.username });
       io.emit('system_message', { id: uuidv4(), text: user.username + ' left the ghost network', timestamp: Date.now() });
       users.delete(socket.id);
+      userLocations.delete(socket.id);
       broadcastUsers();
+      broadcastLocations();
     }
   });
 });
