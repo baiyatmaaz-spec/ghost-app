@@ -1,4 +1,4 @@
-const exress = require('express');
+const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const multer = require('multer');
